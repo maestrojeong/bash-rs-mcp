@@ -1,3 +1,4 @@
+mod journal;
 mod process;
 mod security;
 mod server;
@@ -30,6 +31,7 @@ fn bind_address_is_loopback(bind: &str) -> bool {
 async fn serve_stdio() -> anyhow::Result<()> {
     use rmcp::ServiceExt;
     let registry = Registry::new(spill_root());
+    registry.recover().await;
     let security = Security::from_env()?;
     let server = BashServer::new(registry, security);
     let service = server.serve(rmcp::transport::stdio()).await?;
@@ -54,6 +56,7 @@ async fn serve_http(addr: &str) -> anyhow::Result<()> {
     }
 
     let registry = Registry::new(spill_root());
+    registry.recover().await;
 
     // Stateless by design: no `mcp-session-id`, no server-initiated push
     // over a kept-open stream. Every request re-authenticates itself and
@@ -92,7 +95,18 @@ async fn serve_http(addr: &str) -> anyhow::Result<()> {
         .route(
             "/health",
             axum::routing::get(|| async {
-                axum::Json(serde_json::json!({ "ok": true, "name": "bash-rs", "version": env!("CARGO_PKG_VERSION") }))
+                // Optional: a caller that spawned this process can pass an
+                // identity here and read it back, to tell "the instance I
+                // spawned" apart from a stale process squatting the same
+                // port. Purely a courtesy — nothing in this server itself
+                // depends on it.
+                let instance_id = std::env::var("BASHRS_INSTANCE_ID").ok();
+                axum::Json(serde_json::json!({
+                    "ok": true,
+                    "name": "bash-rs",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "instance_id": instance_id,
+                }))
             }),
         )
         .route("/sse", axum::routing::get(sse::sse_get))
@@ -110,6 +124,14 @@ async fn serve_http(addr: &str) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1);
+    if let Some(first) = args.next() {
+        if first == "--version" || first == "-V" {
+            println!("bash-rs {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)

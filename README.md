@@ -40,6 +40,31 @@ capability on every `POST /message`.
 Both transports share one process-wide `Registry`, so a job started through
 one is visible (and killable) through the other.
 
+## Completion notifications
+
+There is no push/callback — bash-rs never execs anything and never calls
+back into whatever spawned it. Instead every job gets `meta.json` (written
+at spawn) and `result.json` (written on completion) inside
+`{BASHRS_SPILL_ROOT}/{bash_id}/`, alongside `stdout.log`/`stderr.log`. A
+caller watches that directory the same way it would watch any other
+outbox — `fs.watch` + a fallback poll — reads `owner` out of `result.json`
+to route the notification, and deletes (or renames) the file once
+delivered. bash-rs never reads or deletes either file itself.
+
+If the process restarts while a job is still running, it cannot reattach to
+it (it's not that job's real parent anymore — the OS reparented it), but it
+does poll for the pid to disappear and then writes `result.json` with
+`"unknown": true` so a watcher is not left waiting forever. See
+`crates/bashrs-mcp/src/journal.rs` and `Registry::recover` in `process.rs`.
+
+## Health / identity
+
+`GET /health` returns `{ok, name, version, instance_id}`. `instance_id` only
+appears if the process was started with `BASHRS_INSTANCE_ID` set — a
+convenience for a supervisor to confirm it's talking to the instance it
+spawned rather than a stale process squatting the same port. `bash-rs
+--version` prints `bash-rs {version}` and exits.
+
 ## Security
 
 Set `BASHRS_HTTP_CAPABILITY` to a root secret before binding to anything but

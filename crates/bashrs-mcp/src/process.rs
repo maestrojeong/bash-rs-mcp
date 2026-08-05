@@ -19,6 +19,8 @@ use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+use crate::journal::{self, JobMeta, JobResult};
+
 pub const MAX_LIVE_BYTES: usize = 256 * 1024;
 const DEFAULT_WATCH_TIMEOUT_SECONDS: u64 = 3600;
 pub const MAX_WATCH_TIMEOUT_SECONDS: u64 = 24 * 3600;
@@ -116,9 +118,6 @@ pub enum WatchTarget {
 }
 
 pub struct BashProc {
-    /// Kept for a future introspection/`bash_list` tool; not read internally
-    /// today (the registry already keys jobs by this value externally).
-    #[allow(dead_code)]
     pub id: String,
     pub owner: String,
     /// Kept for a future introspection/`bash_list` tool.
@@ -204,6 +203,21 @@ impl Registry {
 
         let spill_dir = self.spill_root.join(&id);
         let _ = std::fs::create_dir_all(&spill_dir);
+
+        // Written before the job can possibly finish, so a crash right after
+        // this point still leaves enough on disk for `recover()` to find the
+        // orphan on the next startup — see journal.rs.
+        journal::write_meta(
+            &spill_dir,
+            &JobMeta {
+                bash_id: id.clone(),
+                owner: owner.to_string(),
+                command: command.clone(),
+                cwd: cwd.clone(),
+                pid,
+                started_at_ms: journal::now_ms(),
+            },
+        );
 
         let handle = Arc::new(ProcHandle {
             proc: Arc::new(BashProc {
@@ -331,10 +345,21 @@ impl Registry {
             let exit_code = child.wait().await.ok().and_then(|s| s.code());
             *proc.exit_code.lock().unwrap() = exit_code;
             proc.exited.store(true, Ordering::SeqCst);
-            if let Some(line) = matched.lock().unwrap().take() {
+            let matched_line = matched.lock().unwrap().take();
+            if let Some(line) = matched_line.clone() {
                 *proc.watch_matched_line.lock().unwrap() = Some(line);
             }
-            drop(registry); // keep registry alive for the duration of this task
+            journal::write_result(
+                &registry.spill_root.join(&proc.id),
+                &JobResult {
+                    bash_id: proc.id.clone(),
+                    owner: proc.owner.clone(),
+                    exit_code,
+                    finished_at_ms: journal::now_ms(),
+                    matched_line,
+                    unknown: false,
+                },
+            );
         });
 
         Ok(id)
@@ -342,6 +367,60 @@ impl Registry {
 
     pub async fn get(&self, id: &str) -> Option<Arc<ProcHandle>> {
         self.procs.lock().await.get(id).cloned()
+    }
+
+    /// Call once at startup, before serving any request. Scans for jobs a
+    /// *previous* instance of this daemon started and never finished
+    /// watching — `meta.json` on disk with no matching `result.json` yet.
+    ///
+    /// Those jobs are not reattached into this process's in-memory registry:
+    /// `bash_output`/`bash_kill` genuinely can't work on them anymore (this
+    /// process is not their real parent — the OS reparented them when the
+    /// old daemon died — so there is no `wait()` to observe their real exit
+    /// code, only `kill(pid, 0)` polling to notice when they're gone).
+    ///
+    /// What *does* still work: the completion signal. Once the orphan exits
+    /// (observed via polling), a `result.json` is written with
+    /// `unknown: true` so a caller watching the spill root for completions
+    /// (see journal.rs) is not left waiting forever for a job the old
+    /// instance already lost track of.
+    pub async fn recover(self: &Arc<Self>) {
+        let Ok(entries) = std::fs::read_dir(&self.spill_root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() || journal::result_exists(&dir) {
+                continue;
+            }
+            let Some(meta) = journal::read_meta(&dir) else {
+                continue;
+            };
+            tracing::warn!(
+                bash_id = %meta.bash_id,
+                pid = meta.pid,
+                "recover: orphaned job from a previous instance — watching for exit; \
+                 its live output/kill are unavailable now"
+            );
+            let spill_root = self.spill_root.clone();
+            tokio::spawn(async move {
+                while pid_alive(meta.pid) {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                journal::write_result(
+                    &spill_root.join(&meta.bash_id),
+                    &JobResult {
+                        bash_id: meta.bash_id.clone(),
+                        owner: meta.owner.clone(),
+                        exit_code: None,
+                        finished_at_ms: journal::now_ms(),
+                        matched_line: None,
+                        unknown: true,
+                    },
+                );
+                tracing::info!(bash_id = %meta.bash_id, "recover: orphaned job finished");
+            });
+        }
     }
 
     pub async fn kill(&self, id: &str) -> Option<bool> {
@@ -380,6 +459,20 @@ fn signal_pid(pid: i32, signal: i32) {
 
 #[cfg(not(unix))]
 fn signal_pid(_pid: i32, _signal: i32) {}
+
+/// `kill(pid, 0)`: sends no signal, just checks whether `pid` still exists
+/// and is ours to signal. Used only by `Registry::recover` — it cannot
+/// `wait()` an orphan it didn't fork, so this poll is the only exit signal
+/// available to it.
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: i32) -> bool {
+    false
+}
 
 #[cfg(unix)]
 fn libc_sigterm() -> i32 {
