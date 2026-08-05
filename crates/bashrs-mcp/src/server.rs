@@ -58,7 +58,7 @@ struct RunArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct OutputArgs {
-    /// `bash_id` returned by `bash_run` or `bash_watch`.
+    /// `bash_id` returned by `background_bash_run` or `background_bash_watch`.
     bash_id: String,
 }
 
@@ -119,10 +119,10 @@ impl BashServer {
 impl BashServer {
     #[tool(
         description = "Start a long-running shell command in the background. Returns bash_id immediately. \
-        Use only for commands expected to outlive the current turn/request. Poll with bash_output; \
-        terminate early with bash_kill."
+        Use only for commands expected to outlive the current turn/request. Poll with background_bash_output; \
+        terminate early with background_bash_kill."
     )]
-    async fn bash_run(
+    async fn background_bash_run(
         &self,
         Parameters(a): Parameters<RunArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -140,7 +140,7 @@ impl BashServer {
         Returns only new bytes plus exited/exitCode. dropped_bytes counts bytes that scrolled out of \
         the live window; read the spill file path for the complete output when that happens."
     )]
-    async fn bash_output(
+    async fn background_bash_output(
         &self,
         Parameters(a): Parameters<OutputArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -185,9 +185,9 @@ impl BashServer {
     #[tool(
         description = "Start a background shell command and watch stdout/stderr for a regex match, \
         line by line. Stops the process as soon as `pattern` matches (or on timeout / natural exit) \
-        and reports the outcome via bash_output. One-shot only; poll bash_output for the result."
+        and reports the outcome via background_bash_output. One-shot only; poll background_bash_output for the result."
     )]
-    async fn bash_watch(
+    async fn background_bash_watch(
         &self,
         Parameters(a): Parameters<WatchArgs>,
     ) -> Result<CallToolResult, McpError> {
@@ -217,7 +217,7 @@ impl BashServer {
     #[tool(
         description = "Terminate a background process (SIGTERM, then SIGKILL after 5s). Idempotent."
     )]
-    async fn bash_kill(
+    async fn background_bash_kill(
         &self,
         Parameters(a): Parameters<KillArgs>,
     ) -> Result<CallToolResult, McpError> {

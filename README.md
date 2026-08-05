@@ -9,10 +9,10 @@ instead of a CDP-driven browser).
 
 Four tools:
 
-- `bash_run` — start a shell command in the background, get a `bash_id` back immediately.
-- `bash_output` — poll incremental stdout/stderr for a `bash_id` since the last call.
-- `bash_watch` — start a command and stop it the moment a regex matches a line of output.
-- `bash_kill` — SIGTERM (then SIGKILL after 5s) a running job.
+- `background_bash_run` — start a shell command in the background, get a `bash_id` back immediately.
+- `background_bash_output` — poll incremental stdout/stderr for a `bash_id` since the last call.
+- `background_bash_watch` — start a command and stop it the moment a regex matches a line of output.
+- `background_bash_kill` — SIGTERM (then SIGKILL after 5s) a running job.
 
 Jobs are addressed by `bash_id` and live in a process-global registry —
 independent of whatever MCP connection started them. That's the whole point

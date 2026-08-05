@@ -2,7 +2,7 @@
 //!
 //! This is the *actual* state this server exists to hold — deliberately
 //! decoupled from the MCP transport/session. A `BashProc` is created by
-//! `bash_run`/`bash_watch`, addressed by its `bash_id` from then on, and
+//! `background_bash_run`/`background_bash_watch`, addressed by its `bash_id` from then on, and
 //! outlives whatever MCP request created it. Nothing here reads or writes
 //! anything session-shaped; the only access control is the capability-derived
 //! `owner` string stored on the proc and checked by every subsequent call.
@@ -374,7 +374,7 @@ impl Registry {
     /// watching — `meta.json` on disk with no matching `result.json` yet.
     ///
     /// Those jobs are not reattached into this process's in-memory registry:
-    /// `bash_output`/`bash_kill` genuinely can't work on them anymore (this
+    /// `background_bash_output`/`background_bash_kill` genuinely can't work on them anymore (this
     /// process is not their real parent — the OS reparented them when the
     /// old daemon died — so there is no `wait()` to observe their real exit
     /// code, only `kill(pid, 0)` polling to notice when they're gone).
