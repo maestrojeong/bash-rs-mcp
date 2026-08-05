@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: bash-rs-macos-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: bash-rs-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify release tag matches package version
+        run: |
+          version="$(cargo pkgid -p bashrs-mcp | sed -E 's/.*[#@]//')"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "release tag ${GITHUB_REF_NAME} does not match bashrs-mcp version v${version}" >&2
+            exit 1
+          }
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p bashrs-mcp
+
+      - name: Package
+        run: |
+          cp "target/${{ matrix.target }}/release/bash-rs" "${{ matrix.asset }}"
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256

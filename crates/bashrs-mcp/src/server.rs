@@ -28,9 +28,6 @@ use serde::Deserialize;
 use crate::process::{Registry, WatchRequest, WatchTarget};
 use crate::security::Security;
 
-pub const DEFAULT_WATCH_TIMEOUT_SECONDS: u64 = 3600;
-pub const MAX_WATCH_TIMEOUT_SECONDS: u64 = crate::process::MAX_WATCH_TIMEOUT_SECONDS;
-
 tokio::task_local! {
     /// The caller's owner string for the request currently being handled,
     /// scoped in for the duration of one `tool_router.call()` future. Not a
@@ -156,8 +153,14 @@ impl BashServer {
         }
         let stdout_from = *handle.stdout_cursor.lock().unwrap();
         let stderr_from = *handle.stderr_cursor.lock().unwrap();
-        let out = handle.proc.stdout.lock().await.read_since(stdout_from);
-        let err = handle.proc.stderr.lock().await.read_since(stderr_from);
+        let (out, stdout_path) = {
+            let stream = handle.proc.stdout.lock().await;
+            (stream.read_since(stdout_from), stream.spill_path.clone())
+        };
+        let (err, stderr_path) = {
+            let stream = handle.proc.stderr.lock().await;
+            (stream.read_since(stderr_from), stream.spill_path.clone())
+        };
         *handle.stdout_cursor.lock().unwrap() = out.next_cursor;
         *handle.stderr_cursor.lock().unwrap() = err.next_cursor;
         let exited = handle.proc.exited.load(std::sync::atomic::Ordering::SeqCst);
@@ -170,6 +173,11 @@ impl BashServer {
             "stderr": err.text,
             "stdout_dropped": out.dropped_bytes,
             "stderr_dropped": err.dropped_bytes,
+            // Only useful once dropped_bytes > 0 (the live window doesn't
+            // hold the full history), but always returned when the spill
+            // file exists so a caller doesn't have to guess the path.
+            "stdout_path": stdout_path,
+            "stderr_path": stderr_path,
         })
         .to_string()))
     }
@@ -206,7 +214,9 @@ impl BashServer {
         }
     }
 
-    #[tool(description = "Terminate a background process (SIGTERM, then SIGKILL after 5s). Idempotent.")]
+    #[tool(
+        description = "Terminate a background process (SIGTERM, then SIGKILL after 5s). Idempotent."
+    )]
     async fn bash_kill(
         &self,
         Parameters(a): Parameters<KillArgs>,
@@ -227,7 +237,9 @@ impl BashServer {
 
 fn spawn_error_message(e: crate::process::SpawnError) -> String {
     match e {
-        crate::process::SpawnError::InvalidRegex(msg) => format!("invalid regex in `pattern`: {msg}"),
+        crate::process::SpawnError::InvalidRegex(msg) => {
+            format!("invalid regex in `pattern`: {msg}")
+        }
         crate::process::SpawnError::Io(msg) => format!("failed to start process: {msg}"),
     }
 }
@@ -251,8 +263,7 @@ impl rmcp::ServerHandler for BashServer {
         // is nothing left to check per-call in that case.
         let owner = match context.extensions.get::<http::request::Parts>() {
             Some(parts) => {
-                let identity =
-                    crate::security::resolve_identity(&parts.headers, parts.uri.query());
+                let identity = crate::security::resolve_identity(&parts.headers, parts.uri.query());
                 if let Err(msg) = self
                     .security
                     .authorize(identity.capability.as_deref(), identity.owner.as_deref())

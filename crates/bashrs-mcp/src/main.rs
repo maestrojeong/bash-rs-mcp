@@ -62,11 +62,17 @@ async fn serve_http(addr: &str) -> anyhow::Result<()> {
 
     let factory_registry = registry.clone();
     let factory_security = security.clone();
-    let service: StreamableHttpService<BashServer, NeverSessionManager> = StreamableHttpService::new(
-        move || Ok(BashServer::new(factory_registry.clone(), factory_security.clone())),
-        Arc::new(NeverSessionManager::default()),
-        config,
-    );
+    let service: StreamableHttpService<BashServer, NeverSessionManager> =
+        StreamableHttpService::new(
+            move || {
+                Ok(BashServer::new(
+                    factory_registry.clone(),
+                    factory_security.clone(),
+                ))
+            },
+            Arc::new(NeverSessionManager::default()),
+            config,
+        );
 
     // `/mcp` is stateless (above); `/sse` + `/message` is the legacy,
     // inherently session-based transport for clients that don't speak

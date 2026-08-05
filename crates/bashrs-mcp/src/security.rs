@@ -60,15 +60,11 @@ impl Security {
         self.root_capability.is_some()
     }
 
-    /// Every owner gets its own derived capability so one topic/tenant cannot
-    /// address another topic's `bash_id`s even if it guesses them.
-    pub fn owner_capability(&self, owner: &str) -> Option<String> {
-        self.root_capability
-            .as_deref()
-            .map(|root| derive_owner_capability(root, owner))
-    }
-
-    pub fn authorize(&self, provided: Option<&str>, owner: Option<&str>) -> Result<(), &'static str> {
+    pub fn authorize(
+        &self,
+        provided: Option<&str>,
+        owner: Option<&str>,
+    ) -> Result<(), &'static str> {
         let Some(root) = self.root_capability.as_deref() else {
             return Ok(()); // unmanaged / loopback-only mode
         };
@@ -199,7 +195,9 @@ pub async fn authorize_http(security: Security, request: Request, next: Next) ->
     }
     let query = request.uri().query().map(str::to_string);
     let identity = resolve_identity(request.headers(), query.as_deref());
-    if let Err(message) = security.authorize(identity.capability.as_deref(), identity.owner.as_deref()) {
+    if let Err(message) =
+        security.authorize(identity.capability.as_deref(), identity.owner.as_deref())
+    {
         return unauthorized(message);
     }
     next.run(request).await

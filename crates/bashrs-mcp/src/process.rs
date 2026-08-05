@@ -106,10 +106,6 @@ impl OutputStream {
             }
         }
     }
-
-    pub fn total_bytes(&self) -> u64 {
-        self.total
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -119,17 +115,17 @@ pub enum WatchTarget {
     Both,
 }
 
-struct WatchState {
-    regex: Regex,
-    target: WatchTarget,
-    stdout_carry: String,
-    stderr_carry: String,
-}
-
 pub struct BashProc {
+    /// Kept for a future introspection/`bash_list` tool; not read internally
+    /// today (the registry already keys jobs by this value externally).
+    #[allow(dead_code)]
     pub id: String,
     pub owner: String,
+    /// Kept for a future introspection/`bash_list` tool.
+    #[allow(dead_code)]
     pub command: String,
+    /// Kept for a future introspection/`bash_list` tool.
+    #[allow(dead_code)]
     pub started_at: Instant,
     pub stdout: Mutex<OutputStream>,
     pub stderr: Mutex<OutputStream>,
@@ -182,9 +178,9 @@ impl Registry {
         watch: Option<WatchRequest>,
     ) -> Result<String, SpawnError> {
         let watch_state = match watch.as_ref() {
-            Some(w) => Some(
-                Regex::new(&w.pattern).map_err(|e| SpawnError::InvalidRegex(e.to_string()))?,
-            ),
+            Some(w) => {
+                Some(Regex::new(&w.pattern).map_err(|e| SpawnError::InvalidRegex(e.to_string()))?)
+            }
             None => None,
         };
 
@@ -229,7 +225,10 @@ impl Registry {
         self.procs.lock().await.insert(id.clone(), handle.clone());
 
         let proc = handle.proc.clone();
-        let watch_target = watch.as_ref().map(|w| w.target).unwrap_or(WatchTarget::Both);
+        let watch_target = watch
+            .as_ref()
+            .map(|w| w.target)
+            .unwrap_or(WatchTarget::Both);
         let timeout = Duration::from_secs(
             watch
                 .as_ref()
@@ -237,13 +236,6 @@ impl Registry {
                 .unwrap_or(DEFAULT_WATCH_TIMEOUT_SECONDS)
                 .min(MAX_WATCH_TIMEOUT_SECONDS),
         );
-
-        let mut watch_state = watch_state.map(|regex| WatchState {
-            regex,
-            target: watch_target,
-            stdout_carry: String::new(),
-            stderr_carry: String::new(),
-        });
 
         let registry = self.clone();
         tokio::spawn(async move {
@@ -255,10 +247,9 @@ impl Registry {
             let matched_stderr = matched.clone();
 
             // Streams are read independently; watch matching (if any) is
-            // checked line-by-line on whichever stream(s) `target` selects.
-            let regex_ref: Option<Regex> = watch_state.as_ref().map(|w| w.regex.clone());
-            let regex_stdout = regex_ref.clone();
-            let regex_stderr = regex_ref;
+            // checked line-by-line on whichever stream(s) `watch_target` selects.
+            let regex_stdout = watch_state.clone();
+            let regex_stderr = watch_state.clone();
 
             let stdout_task = tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout);
@@ -271,11 +262,12 @@ impl Registry {
                             stdout_proc.stdout.lock().await.push(&buf[..n]);
                             if let Some(re) = regex_stdout.as_ref() {
                                 if matched_stdout.lock().unwrap().is_none()
-                                    && matches!(watch_target, WatchTarget::Stdout | WatchTarget::Both)
+                                    && matches!(
+                                        watch_target,
+                                        WatchTarget::Stdout | WatchTarget::Both
+                                    )
                                 {
-                                    if let Some(line) =
-                                        scan_lines(&mut carry, &buf[..n], re)
-                                    {
+                                    if let Some(line) = scan_lines(&mut carry, &buf[..n], re) {
                                         *matched_stdout.lock().unwrap() = Some(line);
                                     }
                                 }
@@ -296,11 +288,12 @@ impl Registry {
                             stderr_proc.stderr.lock().await.push(&buf[..n]);
                             if let Some(re) = regex_stderr.as_ref() {
                                 if matched_stderr.lock().unwrap().is_none()
-                                    && matches!(watch_target, WatchTarget::Stderr | WatchTarget::Both)
+                                    && matches!(
+                                        watch_target,
+                                        WatchTarget::Stderr | WatchTarget::Both
+                                    )
                                 {
-                                    if let Some(line) =
-                                        scan_lines(&mut carry, &buf[..n], re)
-                                    {
+                                    if let Some(line) = scan_lines(&mut carry, &buf[..n], re) {
                                         *matched_stderr.lock().unwrap() = Some(line);
                                     }
                                 }
@@ -341,7 +334,6 @@ impl Registry {
             if let Some(line) = matched.lock().unwrap().take() {
                 *proc.watch_matched_line.lock().unwrap() = Some(line);
             }
-            let _ = watch_state.take();
             drop(registry); // keep registry alive for the duration of this task
         });
 
@@ -373,12 +365,7 @@ fn scan_lines(carry: &mut String, chunk: &[u8], regex: &Regex) -> Option<String>
     carry.push_str(&String::from_utf8_lossy(chunk));
     let mut lines: Vec<String> = carry.split('\n').map(|s| s.to_string()).collect();
     *carry = lines.pop().unwrap_or_default();
-    for line in lines {
-        if regex.is_match(&line) {
-            return Some(line);
-        }
-    }
-    None
+    lines.into_iter().find(|line| regex.is_match(line))
 }
 
 #[cfg(unix)]

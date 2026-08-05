@@ -48,6 +48,14 @@ capability they must present is `HMAC-SHA256(root, owner)` in
 `X-Bash-Capability`. This is deliberately request-scoped, not
 session-scoped — see `crates/bashrs-mcp/src/security.rs`.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maestrojeong/bash-rs-mcp/main/install.sh | sh
+```
+
+Prebuilt binaries: macOS arm64, Linux x86_64. Anything else, build from source below.
+
 ## Build
 
 ```sh
