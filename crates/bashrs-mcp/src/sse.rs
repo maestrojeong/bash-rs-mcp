@@ -30,7 +30,7 @@ use rmcp::ServiceExt;
 use tokio::sync::Mutex;
 
 use crate::process::Registry;
-use crate::security::{request_owner, Security};
+use crate::security::{resolve_identity, Security};
 use crate::server::BashServer;
 
 #[derive(Clone)]
@@ -117,12 +117,7 @@ pub async fn sse_get(
     // The auth middleware already rejected this request if the capability
     // was wrong; here we only need the owner it approved, to scope the new
     // session's `bash_id` registry access (see `server.rs::default_owner`).
-    let owner = {
-        let mut req = axum::extract::Request::new(axum::body::Body::empty());
-        *req.headers_mut() = headers.clone();
-        *req.uri_mut() = uri.clone();
-        request_owner(&req)
-    };
+    let owner = resolve_identity(&headers, uri.query()).owner;
 
     let session_id = random_token();
     let message_token = random_token();

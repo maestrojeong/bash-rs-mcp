@@ -26,7 +26,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::process::{Registry, WatchRequest, WatchTarget};
-use crate::security::{Security, CAPABILITY_HEADER, OWNER_HEADER};
+use crate::security::Security;
 
 pub const DEFAULT_WATCH_TIMEOUT_SECONDS: u64 = 3600;
 pub const MAX_WATCH_TIMEOUT_SECONDS: u64 = crate::process::MAX_WATCH_TIMEOUT_SECONDS;
@@ -251,20 +251,15 @@ impl rmcp::ServerHandler for BashServer {
         // is nothing left to check per-call in that case.
         let owner = match context.extensions.get::<http::request::Parts>() {
             Some(parts) => {
-                let provided = parts
-                    .headers
-                    .get(CAPABILITY_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-                let owner = parts
-                    .headers
-                    .get(OWNER_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-                if let Err(msg) = self.security.authorize(provided.as_deref(), owner.as_deref()) {
+                let identity =
+                    crate::security::resolve_identity(&parts.headers, parts.uri.query());
+                if let Err(msg) = self
+                    .security
+                    .authorize(identity.capability.as_deref(), identity.owner.as_deref())
+                {
                     return Ok(fail(msg));
                 }
-                owner
+                identity.owner
             }
             None => self.default_owner.clone(),
         };
