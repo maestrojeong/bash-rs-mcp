@@ -145,13 +145,18 @@ impl BashServer {
         }
         let stdout_from = *handle.stdout_cursor.lock().unwrap();
         let stderr_from = *handle.stderr_cursor.lock().unwrap();
+        // The spill path is only reported once the live window has actually
+        // dropped bytes — before that the caller has seen everything and the
+        // path is noise. Mirrors the TypeScript server's conditional key.
         let (out, stdout_path) = {
             let stream = handle.proc.stdout.lock().await;
-            (stream.read_since(stdout_from), stream.spill_path.clone())
+            let path = stream.has_dropped().then(|| stream.spill_path.clone()).flatten();
+            (stream.read_since(stdout_from), path)
         };
         let (err, stderr_path) = {
             let stream = handle.proc.stderr.lock().await;
-            (stream.read_since(stderr_from), stream.spill_path.clone())
+            let path = stream.has_dropped().then(|| stream.spill_path.clone()).flatten();
+            (stream.read_since(stderr_from), path)
         };
         *handle.stdout_cursor.lock().unwrap() = out.next_cursor;
         *handle.stderr_cursor.lock().unwrap() = err.next_cursor;

@@ -91,6 +91,14 @@ impl OutputStream {
         }
     }
 
+    /// Whether the live window has ever evicted bytes. This is what makes the
+    /// spill file worth mentioning: until it happens the caller has already
+    /// seen everything, and the TypeScript server this mirrors only reported a
+    /// spill path once it actually started spilling.
+    pub fn has_dropped(&self) -> bool {
+        self.live_start > 0
+    }
+
     pub fn read_since(&self, cursor: u64) -> ReadResult {
         if cursor < self.live_start {
             ReadResult {
@@ -329,7 +337,14 @@ impl Registry {
             if watch_state.is_some() {
                 tokio::select! {
                     _ = wait_child => { watch_outcome = Some("exited"); }
-                    _ = tokio::time::sleep(timeout) => { watch_outcome = Some("timeout"); }
+                    _ = tokio::time::sleep(timeout) => {
+                        // Stop the process, don't just stop waiting: the watch
+                        // promised one turn and has now delivered it, so
+                        // leaving the command running would keep producing
+                        // output nobody is listening for.
+                        watch_outcome = Some("timeout");
+                        signal_pid(proc.pid, libc_sigterm());
+                    }
                     _ = async {
                         loop {
                             if matched.lock().unwrap().is_some() { break; }
