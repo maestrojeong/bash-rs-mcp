@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = ["crates/bashrs-mcp"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/maestrojeong/bash-rs-mcp"
+authors = ["Yeonwoo Jeong <aadd4020@gmail.com>"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "process", "signal", "fs"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+tokio-util = "0.7"
+regex = "1"
+libc = "0.2"
+url = "2"
+http = "1"
+axum = "0.8"
+rmcp = { version = "2.2", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
+schemars = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
