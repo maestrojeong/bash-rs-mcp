@@ -20,9 +20,11 @@ use sha2::Sha256;
 // Three call conventions are accepted, checked in this priority order — see
 // each block in `resolve_identity` for which host uses which:
 //
-// 1. negotium: `X-Background-Bash-User` + `X-Background-Bash-Topic` headers,
-//    owner = `${user}\0${topic}` (NUL-joined, byte-for-byte the same input
-//    negotium's own `deriveBgBashContextCapability` hashes — see
+// 1. negotium: `X-Background-Bash-User` + `X-Background-Bash-Topic` headers
+//    (or, when the client can't set custom SSE headers — maestro-agent-sdk —
+//    the same two values as `?user=&topic=` query params instead), owner =
+//    `${user}\0${topic}` (NUL-joined, byte-for-byte the same input negotium's
+//    own `deriveBgBashContextCapability` hashes — see
 //    `packages/core/src/platform/background-bash/context.ts` — so a root
 //    secret shared with that daemon produces an identical capability here).
 // 2. clawgram: `?topic=&groupId=` query params, no capability required (that
@@ -147,6 +149,19 @@ pub fn resolve_identity(headers: &http::HeaderMap, query: Option<&str>) -> Ident
         };
     }
 
+    // 1b. negotium, via query params instead of headers — maestro-agent-sdk
+    // can't set custom SSE headers, so negotium's `backgroundBashTransport`
+    // puts the same three values in `?user=&topic=&capability=` for that
+    // agent only. Must be checked before clawgram's query-param branch
+    // below: clawgram never sends `user`, so its presence disambiguates.
+    if let (Some(user), Some(topic)) = (query_param(query, "user"), query_param(query, "topic")) {
+        let owner = format!("{user}\0{topic}");
+        return Identity {
+            owner: clean(owner),
+            capability: query_param(query, "capability"),
+        };
+    }
+
     // 2. clawgram
     if let Some(topic) = query_param(query, "topic") {
         let owner = match query_param(query, "groupId") {
@@ -266,6 +281,25 @@ mod tests {
         let id = resolve_identity(&h, None);
         assert_eq!(id.owner.as_deref(), Some("user-1\0topic-1"));
         assert_eq!(id.capability.as_deref(), Some("cap-abc"));
+    }
+
+    #[test]
+    fn resolve_identity_negotium_convention_via_query_params() {
+        // maestro-agent-sdk can't set custom SSE headers, so negotium falls
+        // back to `?user=&topic=&capability=` for that agent only.
+        let h = headers(&[]);
+        let id = resolve_identity(&h, Some("user=user-1&topic=topic-1&capability=cap-abc"));
+        assert_eq!(id.owner.as_deref(), Some("user-1\0topic-1"));
+        assert_eq!(id.capability.as_deref(), Some("cap-abc"));
+    }
+
+    #[test]
+    fn resolve_identity_negotium_query_params_take_priority_over_clawgram() {
+        // clawgram never sends `user`; its presence here must not be
+        // misread as the clawgram (topic-only) convention.
+        let h = headers(&[]);
+        let id = resolve_identity(&h, Some("user=u&topic=t"));
+        assert_eq!(id.owner.as_deref(), Some("u\0t"));
     }
 
     #[test]
