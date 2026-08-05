@@ -36,6 +36,12 @@ pub struct JobResult {
     pub exit_code: Option<i32>,
     pub finished_at_ms: u64,
     pub matched_line: Option<String>,
+    /// For a watch job, which arm ended it: "matched", "timeout" or "exited".
+    /// `None` for a plain background run. `matched_line` cannot stand in for
+    /// this — it is absent both when the watch timed out and when the command
+    /// exited first, which are different things to tell the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_outcome: Option<String>,
     /// True when the exit code could not be observed — the job was still
     /// running when a *previous* bash-rs instance died and this one
     /// inherited an orphan it is not the real parent of, so `wait()` is

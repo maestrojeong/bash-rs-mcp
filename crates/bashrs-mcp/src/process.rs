@@ -321,10 +321,15 @@ impl Registry {
                 let _ = child.wait().await;
             };
 
+            // Which arm of the watch finished decides the completion notice a
+            // consumer renders, and "timed out" reads very differently from
+            // "the command exited before matching". `matched_line` alone
+            // cannot tell those two apart, so record the arm.
+            let mut watch_outcome: Option<&'static str> = None;
             if watch_state.is_some() {
                 tokio::select! {
-                    _ = wait_child => {}
-                    _ = tokio::time::sleep(timeout) => {}
+                    _ = wait_child => { watch_outcome = Some("exited"); }
+                    _ = tokio::time::sleep(timeout) => { watch_outcome = Some("timeout"); }
                     _ = async {
                         loop {
                             if matched.lock().unwrap().is_some() { break; }
@@ -333,6 +338,7 @@ impl Registry {
                     } => {
                         // matched: terminate the process, matching TS's
                         // handleWatchMatch (stop as soon as the line appears).
+                        watch_outcome = Some("matched");
                         signal_pid(proc.pid, libc_sigterm());
                     }
                 }
@@ -357,6 +363,7 @@ impl Registry {
                     exit_code,
                     finished_at_ms: journal::now_ms(),
                     matched_line,
+                    watch_outcome: watch_outcome.map(str::to_string),
                     unknown: false,
                 },
             );
@@ -415,6 +422,7 @@ impl Registry {
                         exit_code: None,
                         finished_at_ms: journal::now_ms(),
                         matched_line: None,
+                        watch_outcome: None,
                         unknown: true,
                     },
                 );

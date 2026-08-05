@@ -51,14 +51,14 @@ fn fail(message: impl Into<String>) -> CallToolResult {
 struct RunArgs {
     /// Shell command, executed via `bash -c`.
     command: String,
-    /// Working directory (absolute path). Omit to inherit the server's cwd.
+    /// Working directory (absolute path).
     #[serde(default)]
     cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct OutputArgs {
-    /// `bash_id` returned by `background_bash_run` or `background_bash_watch`.
+    /// bash_id from background_bash_run.
     bash_id: String,
 }
 
@@ -67,20 +67,20 @@ struct WatchArgs {
     /// Shell command, executed via `bash -c`.
     command: String,
     /// Regular expression tested against each output line.
-    pattern: String,
+    r#match: String,
     #[serde(default)]
     cwd: Option<String>,
-    /// Which stream(s) to test: "stdout" | "stderr" | "both" (default "both").
+    /// Which stream(s) to test against `match` (default both).
     #[serde(default)]
     stream: Option<String>,
-    /// Give up after this many seconds (default 3600, max 86400).
+    /// Give up waiting for a match after this many seconds (default 3600, max 86400).
     #[serde(default)]
     timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct KillArgs {
-    /// `bash_id` to terminate.
+    /// bash_id to kill.
     bash_id: String,
 }
 
@@ -117,11 +117,7 @@ impl BashServer {
 
 #[tool_router(router = tool_router)]
 impl BashServer {
-    #[tool(
-        description = "Start a long-running shell command in the background. Returns bash_id immediately. \
-        Use only for commands expected to outlive the current turn/request. Poll with background_bash_output; \
-        terminate early with background_bash_kill."
-    )]
+    #[tool(description = "Start a long-running shell command in the background. Returns bash_id immediately. Use this only for independent commands expected to run longer than about 2 minutes or survive beyond the current agent turn. Run ordinary builds, tests, and commands whose result is needed for the next step in the foreground; do not use this merely to avoid waiting. The process runs independently of this agent turn. When it exits, its output is injected into this session as a new turn. Each stream is previewed up to 64 KiB (head + tail); when output exceeds that, the preview states how much was omitted and gives the path of a spill file holding the complete stdout/stderr, readable until the process is pruned. You do NOT need to poll for completion — just start it and continue. Use background_bash_output to peek at live output, background_bash_kill to terminate early.")]
     async fn background_bash_run(
         &self,
         Parameters(a): Parameters<RunArgs>,
@@ -135,11 +131,7 @@ impl BashServer {
         }
     }
 
-    #[tool(
-        description = "Poll incremental stdout/stderr since the last call for a background job. \
-        Returns only new bytes plus exited/exitCode. dropped_bytes counts bytes that scrolled out of \
-        the live window; read the spill file path for the complete output when that happens."
-    )]
+    #[tool(description = "Poll incremental stdout/stderr since the last call. Returns only new bytes plus exited/exitCode. stdoutDropped/stderrDropped count bytes that scrolled out of the live window before this call reached them; read stdoutPath/stderrPath for the complete output when that happens.")]
     async fn background_bash_output(
         &self,
         Parameters(a): Parameters<OutputArgs>,
@@ -165,28 +157,32 @@ impl BashServer {
         *handle.stderr_cursor.lock().unwrap() = err.next_cursor;
         let exited = handle.proc.exited.load(std::sync::atomic::Ordering::SeqCst);
         let exit_code = *handle.proc.exit_code.lock().unwrap();
-        Ok(ok(serde_json::json!({
+        // Field names mirror the TypeScript server this binary replaced, so a
+        // host can swap implementations without rewriting its callers.
+        let mut payload = serde_json::json!({
             "bash_id": a.bash_id,
             "exited": exited,
-            "exit_code": exit_code,
+            "exitCode": exit_code,
             "stdout": out.text,
             "stderr": err.text,
-            "stdout_dropped": out.dropped_bytes,
-            "stderr_dropped": err.dropped_bytes,
-            // Only useful once dropped_bytes > 0 (the live window doesn't
-            // hold the full history), but always returned when the spill
-            // file exists so a caller doesn't have to guess the path.
-            "stdout_path": stdout_path,
-            "stderr_path": stderr_path,
-        })
-        .to_string()))
+        });
+        let map = payload.as_object_mut().expect("object");
+        if out.dropped_bytes > 0 {
+            map.insert("stdoutDropped".into(), out.dropped_bytes.into());
+        }
+        if err.dropped_bytes > 0 {
+            map.insert("stderrDropped".into(), err.dropped_bytes.into());
+        }
+        if let Some(path) = stdout_path {
+            map.insert("stdoutPath".into(), path.to_string_lossy().into_owned().into());
+        }
+        if let Some(path) = stderr_path {
+            map.insert("stderrPath".into(), path.to_string_lossy().into_owned().into());
+        }
+        Ok(ok(payload.to_string()))
     }
 
-    #[tool(
-        description = "Start a background shell command and watch stdout/stderr for a regex match, \
-        line by line. Stops the process as soon as `pattern` matches (or on timeout / natural exit) \
-        and reports the outcome via background_bash_output. One-shot only; poll background_bash_output for the result."
-    )]
+    #[tool(description = "Start a background shell command and watch its stdout/stderr for a regex match, one line at a time. The moment a line matches `match`, the process is stopped and the matching line plus buffered output is injected into this session as a new turn — you do NOT need to poll. If nothing matches within `timeout_seconds` (default 3600), or the command exits on its own first, a final status turn is injected instead. Exactly one turn is ever injected per watch — this is one-shot only, there is no repeat/streaming mode yet. Prefer this over `background_bash_run` + manual `background_bash_output` polling when you are waiting for a specific condition to appear (a deploy readiness line, an error) rather than for the command itself to finish.")]
     async fn background_bash_watch(
         &self,
         Parameters(a): Parameters<WatchArgs>,
@@ -198,7 +194,7 @@ impl BashServer {
             _ => WatchTarget::Both,
         };
         let watch = WatchRequest {
-            pattern: a.pattern,
+            pattern: a.r#match,
             target,
             timeout_seconds: a.timeout_seconds,
         };
@@ -214,9 +210,7 @@ impl BashServer {
         }
     }
 
-    #[tool(
-        description = "Terminate a background process (SIGTERM, then SIGKILL after 5s). Idempotent."
-    )]
+    #[tool(description = "Terminate a background process (SIGTERM → SIGKILL after 5s). Idempotent.")]
     async fn background_bash_kill(
         &self,
         Parameters(a): Parameters<KillArgs>,
@@ -228,6 +222,15 @@ impl BashServer {
         if handle.proc.owner != owner {
             return Ok(fail(format!("unknown bash_id: {}", a.bash_id)));
         }
+        if handle.proc.exited.load(std::sync::atomic::Ordering::SeqCst) {
+            let exit_code = *handle.proc.exit_code.lock().unwrap();
+            return Ok(ok(serde_json::json!({
+                "bash_id": a.bash_id,
+                "alreadyExited": true,
+                "exitCode": exit_code,
+            })
+            .to_string()));
+        }
         let killed = self.registry.kill(&a.bash_id).await.unwrap_or(false);
         Ok(ok(
             serde_json::json!({ "bash_id": a.bash_id, "killed": killed }).to_string(),
@@ -238,7 +241,7 @@ impl BashServer {
 fn spawn_error_message(e: crate::process::SpawnError) -> String {
     match e {
         crate::process::SpawnError::InvalidRegex(msg) => {
-            format!("invalid regex in `pattern`: {msg}")
+            format!("invalid regex in `match`: {msg}")
         }
         crate::process::SpawnError::Io(msg) => format!("failed to start process: {msg}"),
     }
