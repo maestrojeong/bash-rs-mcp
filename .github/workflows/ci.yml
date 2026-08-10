@@ -20,7 +20,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   build-and-test:
-    runs-on: ubuntu-latest
+    # Both Linux architectures we publish. Building arm64 only at release time
+    # means a break there is found by a tag, when the version is already cut.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

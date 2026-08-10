@@ -19,6 +19,14 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: bash-rs-linux-x64
+          # Linux on arm64 is not a niche any more: it is what an Apple Silicon
+          # machine runs containers as, and what the cheaper cloud instances
+          # are. Without this asset the installer declines on those hosts and
+          # background_bash is simply missing there — a native runner costs
+          # nothing on a public repo and avoids cross-compilation entirely.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: bash-rs-linux-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
