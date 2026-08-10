@@ -16,16 +16,21 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             asset: bash-rs-macos-arm64
+          # Both Linux assets link musl statically. The gnu builds inherited the
+          # runner's glibc — 2.39 on ubuntu-24.04 — so the binary refused to
+          # start on anything older, Debian bookworm included, which is what
+          # most container images still are. A static binary has no such floor,
+          # and this crate is pure Rust apart from `libc`, so nothing is lost.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             asset: bash-rs-linux-x64
-          # Linux on arm64 is not a niche any more: it is what an Apple Silicon
-          # machine runs containers as, and what the cheaper cloud instances
-          # are. Without this asset the installer declines on those hosts and
-          # background_bash is simply missing there — a native runner costs
-          # nothing on a public repo and avoids cross-compilation entirely.
+          # Linux on arm64 is not a niche: it is what an Apple Silicon machine
+          # runs containers as, and what the cheaper cloud instances are.
+          # Without this asset the installer declines there and background_bash
+          # is simply missing. A native runner is free on a public repo, so no
+          # cross-compilation is involved.
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             asset: bash-rs-linux-arm64
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,8 +49,26 @@ jobs:
             exit 1
           }
 
+      - name: Install musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p bashrs-mcp
+
+      # A musl target that quietly links dynamically would reintroduce the
+      # glibc floor without anyone noticing until the binary failed to start on
+      # someone's machine. Fail the release instead.
+      - name: Verify the Linux binary is static
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          binary="target/${{ matrix.target }}/release/bash-rs"
+          file "$binary"
+          if readelf -d "$binary" | grep -q NEEDED; then
+            echo "expected a static binary, but it has dynamic dependencies:" >&2
+            readelf -d "$binary" | grep NEEDED >&2
+            exit 1
+          fi
 
       - name: Package
         run: |
