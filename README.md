@@ -79,7 +79,14 @@ session-scoped — see `crates/bashrs-mcp/src/security.rs`.
 curl -fsSL https://raw.githubusercontent.com/maestrojeong/bash-rs-mcp/main/install.sh | sh
 ```
 
-Prebuilt binaries: macOS arm64, Linux x86_64. Anything else, build from source below.
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/maestrojeong/bash-rs-mcp/main/install.ps1 | iex
+```
+
+Prebuilt binaries: macOS arm64, Linux x86_64/arm64, Windows x64. Anything
+else, build from source below. On Windows, commands run through Git for
+Windows' bash (`BASH_RS_BASH` overrides the shell it picks).
 
 ## Build
 
