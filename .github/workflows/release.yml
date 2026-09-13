@@ -32,7 +32,20 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             asset: bash-rs-linux-arm64
+          # Windows runs the commands through Git for Windows' bash, which
+          # shares this machine's filesystem and PATH — see `bash_program()`.
+          # There is no static-linking concern here: the MSVC target has no
+          # glibc floor to inherit.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: bash-rs-windows-x64.exe
+            bin_suffix: ".exe"
     runs-on: ${{ matrix.os }}
+    # `cp`, `shasum` and the POSIX test syntax below are bash, which the Windows
+    # runner does not use by default.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +85,7 @@ jobs:
 
       - name: Package
         run: |
-          cp "target/${{ matrix.target }}/release/bash-rs" "${{ matrix.asset }}"
+          cp "target/${{ matrix.target }}/release/bash-rs${{ matrix.bin_suffix }}" "${{ matrix.asset }}"
           shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
 
       - name: Upload to release

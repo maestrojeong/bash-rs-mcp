@@ -25,7 +25,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
+        # windows-latest is here for the same reason the arm runner is: the
+        # cfg(windows) arms — the shell lookup, `taskkill`/`tasklist` process
+        # control — are compiled nowhere else, so a break in them would
+        # otherwise surface only when a tag is cut.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
