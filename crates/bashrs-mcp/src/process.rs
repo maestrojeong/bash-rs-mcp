@@ -210,6 +210,17 @@ impl Registry {
             use std::os::unix::process::CommandExt;
             cmd.as_std_mut().process_group(0); // own process group, mirrors `detached: true` + kill(-pgid)
         }
+        #[cfg(windows)]
+        {
+            // A background job is not attached to anyone's terminal — its
+            // output is read back through this server — so give it no console
+            // at all. CREATE_NO_WINDOW is not enough here: the MSYS runtime
+            // behind Git Bash allocates a console of its own for pty
+            // emulation, which is what blinked a window in front of the user
+            // on every command. (`creation_flags` comes from tokio's Command,
+            // not std's `CommandExt`.)
+            cmd.creation_flags(DETACHED_PROCESS);
+        }
 
         let mut child: Child = cmd.spawn().map_err(|e| SpawnError::Io(e.to_string()))?;
         let pid = child.id().unwrap_or(0) as i32;
@@ -554,6 +565,12 @@ fn signal_pid(pid: i32, signal: i32) {
 /// doing.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// `DETACHED_PROCESS` — the child gets no console at all, not even a hidden
+/// one. Mutually exclusive with `CREATE_NO_WINDOW`; used for the shell itself,
+/// whose MSYS runtime would otherwise allocate its own console regardless.
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 #[cfg(windows)]
 fn signal_pid(pid: i32, signal: i32) {
