@@ -192,12 +192,19 @@ impl Registry {
         };
 
         let id = new_bash_id();
-        let mut cmd = Command::new("bash");
+        let mut cmd = Command::new(bash_program());
         cmd.arg("-c").arg(&command);
         if let Some(dir) = cwd.as_ref() {
             cmd.current_dir(dir);
         }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // stdin is explicitly null, not inherited. A background job has no
+        // console to read from, and this server's own stdin is the MCP stdio
+        // transport — a child holding it can swallow protocol bytes. It also
+        // hangs outright under MSYS bash (Git for Windows), which blocks on the
+        // inherited handle instead of ignoring it like WSL's bash does.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -470,6 +477,58 @@ fn scan_lines(carry: &mut String, chunk: &[u8], regex: &Regex) -> Option<String>
     lines.into_iter().find(|line| regex.is_match(line))
 }
 
+/// The shell to run commands through.
+///
+/// `BASH_RS_BASH` overrides everything, for a host that knows better.
+#[cfg(not(windows))]
+fn bash_program() -> std::path::PathBuf {
+    std::env::var_os("BASH_RS_BASH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("bash"))
+}
+
+/// On Windows, plain `bash` is the wrong shell.
+///
+/// `C:\Windows\System32\bash.exe` is the WSL launcher and usually wins the PATH
+/// search. It runs, and it even translates the Windows working directory into
+/// `/mnt/c/…`, but it is a separate Linux instance: none of the Windows
+/// toolchain the caller expects — node, bun, cargo, git — exists inside it, so
+/// an ordinary `bun test` fails with "command not found". Git for Windows'
+/// bash shares this machine's filesystem and PATH, which is what a caller
+/// asking to run a shell command here means. Prefer it, and fall back to
+/// whatever `bash` resolves to when Git Bash is absent.
+#[cfg(windows)]
+fn bash_program() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    if let Some(explicit) = std::env::var_os("BASH_RS_BASH") {
+        return PathBuf::from(explicit);
+    }
+    // `usr\bin\bash.exe` before `bin\bash.exe`: the latter is a launcher shim
+    // that re-execs the former, and that extra hop breaks this server — the
+    // pipes it hands the shim do not reach the real shell, so output arrives
+    // empty, and the pid it records is the shim's, leaving the actual bash
+    // behind when the job is killed.
+    let relative = [r"Git\usr\bin\bash.exe", r"Git\bin\bash.exe"];
+    for key in [
+        "ProgramFiles",
+        "ProgramW6432",
+        "ProgramFiles(x86)",
+        "LOCALAPPDATA",
+    ] {
+        let Some(root) = std::env::var_os(key) else {
+            continue;
+        };
+        for rel in relative {
+            let candidate = PathBuf::from(&root).join(rel);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("bash")
+}
+
 #[cfg(unix)]
 fn signal_pid(pid: i32, signal: i32) {
     if pid <= 0 {
@@ -480,7 +539,43 @@ fn signal_pid(pid: i32, signal: i32) {
     }
 }
 
-#[cfg(not(unix))]
+/// Windows has no signals, and no process groups to aim one at.
+///
+/// `taskkill /T` walks the child tree the way `kill(-pgid)` does on POSIX, and
+/// `/F` is the closest thing to SIGKILL; without `/F` the request is delivered
+/// as a close request the process may handle. Leaving this a no-op — as it was
+/// — meant `background_bash_kill` reported success while the job kept running,
+/// so a runaway command could not be stopped at all.
+/// `CREATE_NO_WINDOW` — keep helper consoles from flashing a window on screen.
+///
+/// Every console process spawned from a console parent gets its own window by
+/// default. The helpers below are invisible bookkeeping, so without this each
+/// kill or liveness poll blinks a black box in front of whatever the user is
+/// doing.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn signal_pid(pid: i32, signal: i32) {
+    use std::os::windows::process::CommandExt;
+
+    if pid <= 0 {
+        return;
+    }
+    let mut cmd = std::process::Command::new("taskkill.exe");
+    cmd.arg("/PID").arg(pid.to_string()).arg("/T");
+    if signal == libc_sigkill() {
+        cmd.arg("/F");
+    }
+    let _ = cmd
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn signal_pid(_pid: i32, _signal: i32) {}
 
 /// `kill(pid, 0)`: sends no signal, just checks whether `pid` still exists
@@ -492,7 +587,38 @@ fn pid_alive(pid: i32) -> bool {
     pid > 0 && unsafe { libc::kill(pid, 0) == 0 }
 }
 
-#[cfg(not(unix))]
+/// Windows equivalent of the `kill(pid, 0)` liveness poll.
+///
+/// `tasklist` filtered to one PID prints a row for a live process and a "no
+/// tasks" notice otherwise. Returning a hardcoded `false` — as this did — made
+/// `Registry::recover` treat every recovered job as already dead, so their
+/// output was discarded and their processes were left running unattended.
+#[cfg(windows)]
+fn pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    use std::os::windows::process::CommandExt;
+
+    let Ok(output) = std::process::Command::new("tasklist.exe")
+        .arg("/FI")
+        .arg(format!("PID eq {pid}"))
+        .arg("/NH")
+        .arg("/FO")
+        .arg("CSV")
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    // A match is a CSV row whose second field is the PID; the "no tasks" notice
+    // is plain prose, so requiring the quoted PID keeps the two apart.
+    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn pid_alive(_pid: i32) -> bool {
     false
 }
